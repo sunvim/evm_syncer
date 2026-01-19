@@ -123,9 +123,19 @@ func (ts *TxPoolStorage) GetPendingTransaction(ctx context.Context, txHash commo
 		return nil, nil, fmt.Errorf("transaction not found: %s", txHash.Hex())
 	}
 
+	// Validate required keys exist
+	txData, ok := data["tx"]
+	if !ok || txData == "" {
+		return nil, nil, fmt.Errorf("transaction data missing for hash: %s", txHash.Hex())
+	}
+	metadataData, ok := data["metadata"]
+	if !ok || metadataData == "" {
+		return nil, nil, fmt.Errorf("metadata missing for hash: %s", txHash.Hex())
+	}
+
 	// Decode transaction
 	var tx types.Transaction
-	if err := rlp.DecodeBytes([]byte(data["tx"]), &tx); err != nil {
+	if err := rlp.DecodeBytes([]byte(txData), &tx); err != nil {
 		ts.logger.Error("failed to decode transaction",
 			zap.String("tx_hash", txHash.Hex()),
 			zap.Error(err))
@@ -238,9 +248,19 @@ func (ts *TxPoolStorage) MarkAsBroadcasted(ctx context.Context, txHash common.Ha
 		return fmt.Errorf("transaction not found in pending pool: %s", txHash.Hex())
 	}
 
+	// Validate required keys exist
+	txData, ok := data["tx"]
+	if !ok || txData == "" {
+		return fmt.Errorf("transaction data missing for hash: %s", txHash.Hex())
+	}
+	metadataData, ok := data["metadata"]
+	if !ok || metadataData == "" {
+		return fmt.Errorf("metadata missing for hash: %s", txHash.Hex())
+	}
+
 	// Update metadata
 	var metadata TxPoolMetadata
-	if err := json.Unmarshal([]byte(data["metadata"]), &metadata); err != nil {
+	if err := json.Unmarshal([]byte(metadataData), &metadata); err != nil {
 		return fmt.Errorf("decode metadata: %w", err)
 	}
 
@@ -264,7 +284,7 @@ func (ts *TxPoolStorage) MarkAsBroadcasted(ctx context.Context, txHash common.Ha
 	
 	// Copy to broadcasted
 	broadcastedKey := ts.broadcastedTxKey(txHash)
-	pipe.HSet(ctx, broadcastedKey, "tx", data["tx"])
+	pipe.HSet(ctx, broadcastedKey, "tx", txData)
 	pipe.HSet(ctx, broadcastedKey, "metadata", metadataJSON)
 	pipe.SAdd(ctx, KeyPoolBroadcastedSet, txHash.Hex())
 
@@ -295,9 +315,19 @@ func (ts *TxPoolStorage) GetBroadcastedTransaction(ctx context.Context, txHash c
 		return nil, nil, fmt.Errorf("transaction not found in broadcasted pool: %s", txHash.Hex())
 	}
 
+	// Validate required keys exist
+	txData, ok := data["tx"]
+	if !ok || txData == "" {
+		return nil, nil, fmt.Errorf("transaction data missing for hash: %s", txHash.Hex())
+	}
+	metadataData, ok := data["metadata"]
+	if !ok || metadataData == "" {
+		return nil, nil, fmt.Errorf("metadata missing for hash: %s", txHash.Hex())
+	}
+
 	// Decode transaction
 	var tx types.Transaction
-	if err := rlp.DecodeBytes([]byte(data["tx"]), &tx); err != nil {
+	if err := rlp.DecodeBytes([]byte(txData), &tx); err != nil {
 		ts.logger.Error("failed to decode transaction",
 			zap.String("tx_hash", txHash.Hex()),
 			zap.Error(err))
@@ -306,7 +336,7 @@ func (ts *TxPoolStorage) GetBroadcastedTransaction(ctx context.Context, txHash c
 
 	// Decode metadata
 	var metadata TxPoolMetadata
-	if err := json.Unmarshal([]byte(data["metadata"]), &metadata); err != nil {
+	if err := json.Unmarshal([]byte(metadataData), &metadata); err != nil {
 		ts.logger.Error("failed to decode metadata",
 			zap.String("tx_hash", txHash.Hex()),
 			zap.Error(err))
