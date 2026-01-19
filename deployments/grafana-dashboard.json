@@ -1,0 +1,43 @@
+{
+  "dashboard": {
+    "title": "EVM Syncer Dashboard",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Sync Height",
+        "targets": [{"expr": "sync_height"}],
+        "type": "graph"
+      },
+      {
+        "id": 2,
+        "title": "Sync Speed (blocks/sec)",
+        "targets": [{"expr": "sync_speed_bps"}],
+        "type": "graph"
+      },
+      {
+        "id": 3,
+        "title": "Peer Count",
+        "targets": [{"expr": "peer_count"}],
+        "type": "graph"
+      },
+      {
+        "id": 4,
+        "title": "Transaction Pool Size",
+        "targets": [{"expr": "txpool_pending_count"}],
+        "type": "graph"
+      },
+      {
+        "id": 5,
+        "title": "Worker Pool Active Workers",
+        "targets": [{"expr": "worker_pool_active_workers"}],
+        "type": "graph"
+      },
+      {
+        "id": 6,
+        "title": "Validation Failures Rate",
+        "targets": [{"expr": "rate(validation_failures_total[5m])"}],
+        "type": "graph"
+      }
+    ]
+  }
+}

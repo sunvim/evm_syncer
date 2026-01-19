@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  pika:
+    image: pikadb/pika:latest
+    container_name: pika
+    ports:
+      - "9221:9221"
+    volumes:
+      - pika-data:/data
+    command: ["./pika", "-c", "/pika/conf/pika.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "9221", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  evm_syncer:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: evm_syncer
+    depends_on:
+      pika:
+        condition: service_healthy
+    ports:
+      - "30303:30303"
+      - "9090:9090"
+    environment:
+      - EVM_SYNCER_STORAGE_PIKA_ADDR=pika:9221
+      - EVM_SYNCER_LOGGING_LEVEL=info
+      - EVM_SYNCER_METRICS_ENABLED=true
+    volumes:
+      - ./config.yaml:/app/config/config.yaml
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  pika-data:
+  prometheus-data:
+  grafana-data:
