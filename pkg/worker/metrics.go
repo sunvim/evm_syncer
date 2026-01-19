@@ -118,22 +118,12 @@ type MetricsSnapshot struct {
 }
 
 // GetMetrics returns a snapshot of all pool metrics.
-// This is useful for debugging and monitoring without querying Prometheus.
-func GetMetrics(poolName string) (MetricsSnapshot, error) {
-	snapshot := MetricsSnapshot{
+// Note: This returns basic metadata. For actual metric values, query Prometheus or use Pool.Stats().
+func GetMetrics(poolName string) MetricsSnapshot {
+	return MetricsSnapshot{
 		PoolName:  poolName,
 		Timestamp: time.Now(),
 	}
-
-	// Collect metrics from Prometheus
-	metrics := []*prometheus.Desc{
-		activeWorkersGauge.WithLabelValues(poolName).Desc(),
-		queueLengthGauge.WithLabelValues(poolName).Desc(),
-	}
-
-	_ = metrics // Metrics are tracked internally, this function provides a snapshot interface
-
-	return snapshot, nil
 }
 
 // ResetMetrics resets all metrics for a specific pool.

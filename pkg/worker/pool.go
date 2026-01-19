@@ -139,11 +139,9 @@ func (p *Pool) Submit(task Task) error {
 		return ErrPoolShuttingDown
 	}
 
-	p.queuedTasks.Add(1)
-	defer p.queuedTasks.Add(-1)
-
 	select {
 	case p.tasks <- task:
+		p.queuedTasks.Add(1)
 		p.logger.Debug("task submitted", zap.String("task", task.Name()))
 		return nil
 	default:
@@ -154,6 +152,7 @@ func (p *Pool) Submit(task Task) error {
 		
 		select {
 		case p.tasks <- task:
+			p.queuedTasks.Add(1)
 			p.logger.Debug("task submitted", zap.String("task", task.Name()))
 			return nil
 		case <-time.After(5 * time.Second):
@@ -172,14 +171,12 @@ func (p *Pool) TrySubmit(task Task) bool {
 		return false
 	}
 
-	p.queuedTasks.Add(1)
 	select {
 	case p.tasks <- task:
-		p.queuedTasks.Add(-1)
+		p.queuedTasks.Add(1)
 		p.logger.Debug("task submitted (non-blocking)", zap.String("task", task.Name()))
 		return true
 	default:
-		p.queuedTasks.Add(-1)
 		return false
 	}
 }
@@ -236,18 +233,29 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 
 // ShutdownNow immediately stops the pool without waiting for tasks to complete.
 func (p *Pool) ShutdownNow() {
-	if p.state.Load() >= stateClosed {
+	if !p.state.CompareAndSwap(stateRunning, stateClosed) {
+		// Already shutting down or closed
+		if p.state.Load() >= stateShuttingDown {
+			p.state.Store(stateClosed)
+		}
 		return
 	}
 
 	p.logger.Warn("force shutting down worker pool")
-	p.state.Store(stateClosed)
 	
 	if p.cancel != nil {
 		p.cancel()
 	}
 	
-	close(p.tasks)
+	// Close the task channel safely
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.tasks:
+		// Channel already closed
+	default:
+		close(p.tasks)
+	}
 }
 
 // worker is the main worker goroutine that processes tasks.
@@ -268,6 +276,8 @@ func (p *Pool) worker(ctx context.Context, id int) {
 				return
 			}
 
+			// Decrement queued counter as task is being processed
+			p.queuedTasks.Add(-1)
 			p.executeTask(ctx, task, workerLogger)
 		}
 	}
