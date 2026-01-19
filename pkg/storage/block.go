@@ -354,8 +354,11 @@ func (bs *BlockStorage) DeleteBlock(ctx context.Context, blockNumber uint64) err
 	// Load header first to get the hash
 	header, err := bs.LoadBlockHeader(ctx, blockNumber)
 	if err != nil {
-		// If header doesn't exist, nothing to delete
-		return nil
+		// If header doesn't exist (key not found), nothing to delete
+		if fmt.Sprintf("%v", err) == fmt.Sprintf("%v", ErrKeyNotFound) {
+			return nil
+		}
+		return fmt.Errorf("load header for deletion: %w", err)
 	}
 
 	pipe := bs.client.Pipeline()

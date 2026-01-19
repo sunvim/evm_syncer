@@ -107,12 +107,15 @@ func (p *PikaClient) Set(ctx context.Context, key string, value interface{}, exp
 	return nil
 }
 
+// ErrKeyNotFound is returned when a key is not found in storage
+var ErrKeyNotFound = fmt.Errorf("key not found")
+
 // Get retrieves a value by key
 func (p *PikaClient) Get(ctx context.Context, key string) (string, error) {
 	val, err := p.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return "", fmt.Errorf("key not found: %s", key)
+			return "", ErrKeyNotFound
 		}
 		p.logger.Error("failed to get key",
 			zap.String("key", key),
@@ -127,7 +130,7 @@ func (p *PikaClient) GetBytes(ctx context.Context, key string) ([]byte, error) {
 	val, err := p.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
-			return nil, fmt.Errorf("key not found: %s", key)
+			return nil, ErrKeyNotFound
 		}
 		p.logger.Error("failed to get key",
 			zap.String("key", key),
