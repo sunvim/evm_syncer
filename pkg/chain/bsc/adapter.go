@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/sunvim/evm_syncer/pkg/chain"
 )
 
@@ -109,7 +110,7 @@ func (b *BSCAdapter) ValidateBody(block *types.Block) error {
 	header := block.Header()
 
 	// Validate transactions root
-	txHash := types.DeriveSha(block.Transactions(), types.NewTrie())
+	txHash := types.DeriveSha(block.Transactions(), trie.NewStackTrie(nil))
 	if txHash != header.TxHash {
 		return fmt.Errorf("invalid transaction root: got %s, want %s",
 			header.TxHash.Hex(), txHash.Hex())
