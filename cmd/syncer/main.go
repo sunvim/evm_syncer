@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/big"
 	"os"
 	"os/signal"
 	"syscall"
@@ -65,7 +66,7 @@ func main() {
 
 	// Initialize Pika storage
 	pikaClient, err := storage.NewPikaClient(&storage.PikaConfig{
-		Addr:         cfg.Storage.Pika.Addr,
+		Address:      cfg.Storage.Pika.Addr,
 		Password:     cfg.Storage.Pika.Password,
 		DB:           cfg.Storage.Pika.DB,
 		MaxRetries:   3,
@@ -81,8 +82,8 @@ func main() {
 	log.Info("Pika client initialized", zap.String("addr", cfg.Storage.Pika.Addr))
 
 	// Initialize worker pools
-	pools := initWorkerPools(cfg, log)
-	defer stopWorkerPools(pools, log)
+	pools := initWorkerPools(ctx, cfg, log)
+	defer stopWorkerPools(ctx, pools, log)
 
 	// Initialize P2P server
 	p2pServer, err := initP2PServer(cfg, chainAdapter, log)
@@ -97,10 +98,6 @@ func main() {
 	}
 	log.Info("P2P server started", zap.String("listen_addr", cfg.P2P.ListenAddr))
 
-	// Initialize block storage
-	blockStorage := storage.NewBlockStorage(pikaClient)
-	txPoolStorage := storage.NewTxPoolStorage(pikaClient)
-
 	// Initialize syncer
 	syncConfig := &syncer.SyncConfig{
 		Mode:        syncer.SyncModeFull,
@@ -108,15 +105,14 @@ func main() {
 		BatchSize:   cfg.Sync.BatchSize,
 		WorkerCount: cfg.Sync.ConcurrentDownloads,
 	}
-	blockSyncer, err := syncer.NewSyncer(syncConfig, chainAdapter, p2pServer.PeerManager(), blockStorage, log)
+	blockSyncer, err := syncer.NewSyncer(syncConfig, chainAdapter, p2pServer.PeerManager(), pikaClient, log)
 	if err != nil {
 		log.Fatal("failed to initialize syncer", zap.Error(err))
 	}
 
 	// Initialize transaction pool components
-	txValidator := txpool.NewValidator(cfg.Chain.NetworkID, log)
-	broadcaster := txpool.NewBroadcaster(txPoolStorage, p2pServer.PeerManager(), pools["tx-broadcaster"], log)
-	receiver := txpool.NewReceiver(txPoolStorage, p2pServer.PeerManager(), txValidator, log)
+	broadcaster := txpool.NewBroadcaster(pikaClient, p2pServer.PeerManager(), log)
+	receiver := txpool.NewReceiver(pikaClient, big.NewInt(int64(cfg.Chain.NetworkID)), log)
 
 	// Start metrics server
 	if cfg.Metrics.Enabled {
@@ -137,14 +133,14 @@ func main() {
 
 	// Start transaction broadcaster
 	go func() {
-		if err := broadcaster.Start(ctx); err != nil {
+		if err := broadcaster.Start(); err != nil {
 			log.Error("broadcaster failed", zap.Error(err))
 		}
 	}()
 
 	// Start transaction receiver
 	go func() {
-		if err := receiver.Start(ctx); err != nil {
+		if err := receiver.Start(); err != nil {
 			log.Error("receiver failed", zap.Error(err))
 		}
 	}()
@@ -190,65 +186,76 @@ func initChainAdapter(cfg *config.Config) (chain.IChainAdapter, error) {
 }
 
 func initP2PServer(cfg *config.Config, chainAdapter chain.IChainAdapter, log *zap.Logger) (*p2p.Server, error) {
-	p2pConfig := &p2p.Config{
-		ListenAddr:      cfg.P2P.ListenAddr,
-		MaxPeers:        cfg.P2P.MaxPeers,
-		NetworkID:       cfg.Chain.NetworkID,
-		Name:            fmt.Sprintf("evm_syncer/%s", version),
-		Bootnodes:       chainAdapter.GetBootnodes(),
-		MinDesiredPeers: 30,
-		MaxDesiredPeers: 50,
+	// Convert bootnodes to string URLs
+	bootnodes := chainAdapter.GetBootnodes()
+	bootstrapURLs := make([]string, len(bootnodes))
+	for i, node := range bootnodes {
+		bootstrapURLs[i] = node.URLv4()
+	}
+	
+	p2pConfig := &p2p.ServerConfig{
+		ListenAddr:    cfg.P2P.ListenAddr,
+		MaxPeers:      cfg.P2P.MaxPeers,
+		NetworkID:     cfg.Chain.NetworkID,
+		BootstrapURLs: bootstrapURLs,
 	}
 
 	return p2p.NewServer(p2pConfig, log)
 }
 
-func initWorkerPools(cfg *config.Config, log *zap.Logger) map[string]*worker.Pool {
+func initWorkerPools(ctx context.Context, cfg *config.Config, log *zap.Logger) map[string]*worker.Pool {
 	pools := make(map[string]*worker.Pool)
 
 	// Block downloader pool
-	pools["block-downloader"] = worker.NewPool(
-		"block-downloader",
-		cfg.WorkerPools.BlockDownloader.WorkerCount,
-		cfg.WorkerPools.BlockDownloader.QueueSize,
-		log,
-	)
-	pools["block-downloader"].Start()
+	blockDownloaderPool, _ := worker.NewPool(worker.PoolConfig{
+		Name:        "block-downloader",
+		WorkerCount: cfg.WorkerPools.BlockDownloader.WorkerCount,
+		QueueSize:   cfg.WorkerPools.BlockDownloader.QueueSize,
+		Logger:      log,
+	})
+	pools["block-downloader"] = blockDownloaderPool
+	pools["block-downloader"].Start(ctx)
 
 	// Block validator pool
-	pools["block-validator"] = worker.NewPool(
-		"block-validator",
-		cfg.WorkerPools.BlockValidator.WorkerCount,
-		cfg.WorkerPools.BlockValidator.QueueSize,
-		log,
-	)
-	pools["block-validator"].Start()
+	blockValidatorPool, _ := worker.NewPool(worker.PoolConfig{
+		Name:        "block-validator",
+		WorkerCount: cfg.WorkerPools.BlockValidator.WorkerCount,
+		QueueSize:   cfg.WorkerPools.BlockValidator.QueueSize,
+		Logger:      log,
+	})
+	pools["block-validator"] = blockValidatorPool
+	pools["block-validator"].Start(ctx)
 
 	// Transaction broadcaster pool
-	pools["tx-broadcaster"] = worker.NewPool(
-		"tx-broadcaster",
-		cfg.WorkerPools.TxBroadcaster.WorkerCount,
-		cfg.WorkerPools.TxBroadcaster.QueueSize,
-		log,
-	)
-	pools["tx-broadcaster"].Start()
+	txBroadcasterPool, _ := worker.NewPool(worker.PoolConfig{
+		Name:        "tx-broadcaster",
+		WorkerCount: cfg.WorkerPools.TxBroadcaster.WorkerCount,
+		QueueSize:   cfg.WorkerPools.TxBroadcaster.QueueSize,
+		Logger:      log,
+	})
+	pools["tx-broadcaster"] = txBroadcasterPool
+	pools["tx-broadcaster"].Start(ctx)
 
 	// Peer messages pool
-	pools["peer-messages"] = worker.NewPool(
-		"peer-messages",
-		cfg.WorkerPools.PeerMessages.WorkerCount,
-		cfg.WorkerPools.PeerMessages.QueueSize,
-		log,
-	)
-	pools["peer-messages"].Start()
+	peerMessagesPool, _ := worker.NewPool(worker.PoolConfig{
+		Name:        "peer-messages",
+		WorkerCount: cfg.WorkerPools.PeerMessages.WorkerCount,
+		QueueSize:   cfg.WorkerPools.PeerMessages.QueueSize,
+		Logger:      log,
+	})
+	pools["peer-messages"] = peerMessagesPool
+	pools["peer-messages"].Start(ctx)
 
 	return pools
 }
 
-func stopWorkerPools(pools map[string]*worker.Pool, log *zap.Logger) {
+func stopWorkerPools(ctx context.Context, pools map[string]*worker.Pool, log *zap.Logger) {
+	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	
 	for name, pool := range pools {
 		log.Info("stopping worker pool", zap.String("name", name))
-		pool.Stop(30 * time.Second)
+		pool.Shutdown(shutdownCtx)
 	}
 }
 
@@ -264,20 +271,30 @@ func reportProgress(ctx context.Context, s *syncer.Syncer, pm *p2p.PeerManager, 
 			stats := s.GetStats()
 			peerCount := pm.PeerCount()
 
+			currentBlock := stats["current_block"].(uint64)
+			targetBlock := stats["target_block"].(uint64)
+			
+			// Calculate sync speed from metrics if available
+			var blocksPerSecond float64
+			if metricsMap, ok := stats["metrics"].(map[string]interface{}); ok {
+				if bps, ok := metricsMap["blocks_per_second"].(float64); ok {
+					blocksPerSecond = bps
+				}
+			}
+
 			log.Info("sync progress",
-				zap.Uint64("current", stats.CurrentBlock),
-				zap.Uint64("target", stats.TargetBlock),
-				zap.Float64("speed_bps", stats.BlocksPerSecond),
-				zap.String("eta", stats.ETA.String()),
+				zap.Uint64("current", currentBlock),
+				zap.Uint64("target", targetBlock),
+				zap.Float64("speed_bps", blocksPerSecond),
 				zap.Int("peers", peerCount),
 			)
 
 			// Update Prometheus metrics
-			metrics.SyncHeight.Set(float64(stats.CurrentBlock))
+			metrics.SyncHeight.Set(float64(currentBlock))
 			metrics.PeerCount.Set(float64(peerCount))
-			metrics.SyncSpeedBPS.Set(stats.BlocksPerSecond)
-			if stats.TargetBlock > stats.CurrentBlock {
-				metrics.SyncLag.Set(float64(stats.TargetBlock - stats.CurrentBlock))
+			metrics.SyncSpeedBPS.Set(blocksPerSecond)
+			if targetBlock > currentBlock {
+				metrics.SyncLag.Set(float64(targetBlock - currentBlock))
 			}
 		}
 	}
